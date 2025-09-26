@@ -1,5 +1,3 @@
-Got it — here’s the entire `README.md` in one copy-paste block:
-
 ```markdown
 # Dostoevsky RAG Web App
 
@@ -135,7 +133,3 @@ Steps:
 
 This project is for educational purposes. The texts of Dostoevsky's works are in the public domain.
 
-```
-
-Do you want me to also add a **Troubleshooting** section (for issues like NDArray disposal or model not loading) at the bottom so future users won’t get stuck?
-```
