@@ -2,6 +2,7 @@
 import { pipeline } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.16.1';
 import { CreateMLCEngine } from 'https://esm.run/@mlc-ai/web-llm@0.2.70';
 
+
 // --- Globals / UI refs ---
 let INDEX = [];
 let qEmbedder, llm;
@@ -34,21 +35,35 @@ async function initEmbeddings() {
 }
 
 async function initLLM() {
-  setStatus('Initializing WebLLM model (first run downloads weights)…');
-  try {
-    llm = await CreateMLCEngine('Llama-3.2-1B-Instruct-q4f16_1', {
-      initProgressCallback: (p) => {
-        console.log('WebLLM progress', p);
-        if (p?.text) setStatus(`WebLLM: ${p.text}`);
-      },
-      // GitHub Pages lacks COOP/COEP headers; avoid workers
-      use_web_worker: false
-    });
-    setStatus('Ready! Ask a question.');
-  } catch (e) {
-    showError('WebLLM failed to load', e);
-    throw e;
+  setStatus('Initializing WebLLM (first run downloads weights)…');
+
+  const candidates = [
+    'Qwen2.5-1.5B-Instruct-q4f16_1',
+    'Phi-3-mini-4k-instruct-q4f16_1',
+  ];
+
+  let lastErr = null;
+  for (const modelId of candidates) {
+    try {
+      setStatus(`WebLLM: loading ${modelId}…`);
+      llm = await CreateMLCEngine(modelId, {
+        initProgressCallback: (p) => {
+          if (p?.text) setStatus(`WebLLM: ${p.text}`);
+          console.log('WebLLM progress', p);
+        },
+        use_web_worker: false, // important on GitHub Pages
+      });
+      setStatus(`Ready! (${modelId}) Ask a question.`);
+      return;
+    } catch (e) {
+      console.warn(`Model ${modelId} failed:`, e);
+      lastErr = e;
+    }
   }
+  // If we got here, all candidates failed
+  throw new Error(
+    `No supported WebLLM model could be loaded. Last error: ${lastErr?.message || lastErr}`
+  );
 }
 
 // --- Retrieval utils ---
