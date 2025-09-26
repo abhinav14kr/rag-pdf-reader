@@ -1,11 +1,10 @@
-// --- Imports (pin versions + ESM) ---
 import { pipeline } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.16.1';
 import { CreateMLCEngine } from 'https://esm.run/@mlc-ai/web-llm@0.2.70';
 
-
-// --- Globals / UI refs ---
 let INDEX = [];
 let qEmbedder, llm;
+let ready = false;
+
 const statusEl = document.getElementById('status');
 const qEl = document.getElementById('question');
 const askBtn = document.getElementById('ask');
@@ -13,13 +12,10 @@ const ansEl = document.getElementById('answer');
 const srcEl = document.getElementById('sources');
 const topkEl = document.getElementById('topk');
 
-function setStatus(text) { statusEl.textContent = text; }
-function showError(prefix, e) {
-  console.error(prefix, e);
-  setStatus(`${prefix}: ${e?.message || e}`);
-}
+function setStatus(t){ statusEl.textContent = t; }
+function showError(prefix, e){ console.error(prefix, e); setStatus(`${prefix}: ${e?.message || e}`); }
 
-// --- Init steps ---
+// --- init steps ---
 async function loadIndex() {
   setStatus('Loading document index…');
   const resp = await fetch('./public/index.json');
@@ -36,13 +32,12 @@ async function initEmbeddings() {
 
 async function initLLM() {
   setStatus('Initializing WebLLM (first run downloads weights)…');
-
   const candidates = [
     'Qwen2.5-1.5B-Instruct-q4f16_1',
     'Phi-3-mini-4k-instruct-q4f16_1',
   ];
-
   let lastErr = null;
+
   for (const modelId of candidates) {
     try {
       setStatus(`WebLLM: loading ${modelId}…`);
@@ -53,6 +48,9 @@ async function initLLM() {
         },
         use_web_worker: false, // important on GitHub Pages
       });
+      ready = true;
+      askBtn.disabled = false;
+      qEl.disabled = false;
       setStatus(`Ready! (${modelId}) Ask a question.`);
       return;
     } catch (e) {
@@ -60,32 +58,19 @@ async function initLLM() {
       lastErr = e;
     }
   }
-  // If we got here, all candidates failed
-  throw new Error(
-    `No supported WebLLM model could be loaded. Last error: ${lastErr?.message || lastErr}`
-  );
+  throw new Error(`No supported WebLLM model could be loaded. Last error: ${lastErr?.message || lastErr}`);
 }
 
-// --- Retrieval utils ---
-function dot(a, b) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; }
-function cosineSim(qv, dv) { return dot(qv, dv); } // normalized
-function topKSimilar(qv, k=5) {
-  const scores = INDEX.map((rec, i) => ({ i, s: cosineSim(qv, rec.embedding) }));
-  scores.sort((a,b) => b.s - a.s);
-  return scores.slice(0, k).map(({i, s}) => ({ ...INDEX[i], score: s }));
-}
-function buildPrompt(question, passages) {
-  const rules = `You are a careful literary assistant. Answer ONLY using the passages. If unsure, say so. Cite page ranges. Keep it concise.`;
-  const ctx = passages.map((p, idx) =>
-    `# Passage ${idx+1} (score=${p.score.toFixed(3)}, ${p.book}, pp. ${p.pages[0]}-${p.pages[1]})\n${p.text}`
-  ).join('\n\n');
-  const user = `Question: ${question}\n\nUse the passages above; cite which ones you used.`;
-  return [{ role: 'system', content: rules }, { role: 'user', content: ctx + '\n\n' + user }];
-}
-
+// --- ask flow ---
 async function ask() {
+  if (!ready || !llm) {
+    setStatus('Model is still loading. Please wait until it says “Ready!”.');
+    return;
+  }
+
   const question = qEl.value.trim();
   if (!question) return;
+
   ansEl.textContent = 'Thinking…';
   srcEl.innerHTML = '';
 
@@ -96,13 +81,12 @@ async function ask() {
     const passages = topKSimilar(qv, k);
     const messages = buildPrompt(question, passages);
 
-    const completion = await llm.chat.completions.create({
-      messages, temperature: 0.2, max_tokens: 512
+    const res = await llm.chat.completions.create({
+      messages, temperature: 0.2, max_tokens: 512,
     });
-    const text = completion.choices?.[0]?.message?.content || '(no response)';
+    const text = res.choices?.[0]?.message?.content || '(no response)';
     ansEl.textContent = text;
 
-    // sources
     passages.forEach(p => {
       const div = document.createElement('div');
       div.className = 'source';
@@ -115,16 +99,17 @@ async function ask() {
   }
 }
 
-function escapeHtml(s){return s.replace(/[&<>\"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));}
-
-// Boot
+// --- boot ---
 (async () => {
   try {
+    // disable UI until ready
+    askBtn.disabled = true; qEl.disabled = true;
+
     await loadIndex();
     await initEmbeddings();
     await initLLM();
   } catch (e) {
-    // setStatus already updated; nothing else to do
+    showError('Error during initialization', e);
   }
 })();
 askBtn.addEventListener('click', ask);
