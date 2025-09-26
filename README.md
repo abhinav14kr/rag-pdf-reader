@@ -1,4 +1,4 @@
-# Dostoevsky RAG Web App
+# RAG Web App
 
 This project is a Retrieval-Augmented Generation (RAG) application that lets users ask questions about Dostoevsky's books directly in their browser. It uses:
 
