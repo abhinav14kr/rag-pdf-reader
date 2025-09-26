@@ -6,6 +6,8 @@ import { CreateMLCEngine, prebuiltAppConfig } from 'https://esm.run/@mlc-ai/web-
 let INDEX = [];
 let qEmbedder, llm;
 let ready = false;
+let busy = false;
+let chosenModelId = null; // record the model picked by initLLM()
 
 const statusEl = document.getElementById('status');
 const qEl = document.getElementById('question');
@@ -53,12 +55,12 @@ async function initLLM() {
     'Phi-3-mini-4k-instruct-q4f16_1',
     'Phi-2-q4f16_1',
   ];
-  const chosen = preferred.find(id => available.includes(id)) || available[0];
-  setStatus(`WebLLM: loading ${chosen}…`);
+  chosenModelId = preferred.find(id => available.includes(id)) || available[0];
+  setStatus(`WebLLM: loading ${chosenModelId}…`);
 
   // 3) Create engine; avoid web workers on GitHub Pages (no COOP/COEP headers)
   try {
-    llm = await CreateMLCEngine(chosen, {
+    llm = await CreateMLCEngine(chosenModelId, {
       appConfig: prebuiltAppConfig,
       use_web_worker: false,
       initProgressCallback: (p) => {
@@ -67,14 +69,14 @@ async function initLLM() {
       },
     });
   } catch (e) {
-    throw new Error(`Failed to load ${chosen}: ${e?.message || e}`);
+    throw new Error(`Failed to load ${chosenModelId}: ${e?.message || e}`);
   }
 
   // 4) Ready!
   ready = true;
   askBtn.disabled = false;
   qEl.disabled = false;
-  setStatus(`Ready! (${chosen}) Ask a question.`);
+  setStatus(`Ready! (${chosenModelId}) Ask a question.`);
 }
 
 // ------------------------ Retrieval helpers -----------------------
@@ -95,9 +97,16 @@ function buildPrompt(question, passages) {
 }
 function escapeHtml(s) { return s.replace(/[&<>\"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c])); }
 
-// ------------------------ Ask flow --------------------------------
-let busy = false;
+// ------------------------ Embedding helper (no NDArray lifetime) --
+async function embed(text) {
+  // Ask Transformers.js to give plain arrays (not tensors) when possible
+  const out = await qEmbedder(text, { pooling: 'mean', normalize: true, return_tensor: false });
+  // Normalize return shape across versions
+  const vec = Array.isArray(out) ? out : (Array.isArray(out.data) ? out.data : Array.from(out.data));
+  return vec; // plain JS array, detached
+}
 
+// ------------------------ Ask flow --------------------------------
 async function ask() {
   if (!ready || !llm) {
     setStatus('Model is still loading. Please wait until it says “Ready!”.');
@@ -118,28 +127,48 @@ async function ask() {
   srcEl.innerHTML = '';
 
   try {
-    // ---- 1) Embed query ----
-    const out = await qEmbedder(question, { pooling: 'mean', normalize: true });
-
-    // Make a hard copy into a plain JS array *before* disposal
-    const qv = Array.from(out.data);  // ensures a normal JS array
-
-    // Explicitly dispose if possible (Transformers.js returns DisposableTensors sometimes)
-    if (typeof out.dispose === 'function') {
-      try { out.dispose(); } catch (e) { console.warn("Dispose failed:", e); }
-    }
+    // ---- 1) Embed (returns a plain array; no NDArray to dispose) ----
+    const qv = await embed(question);
 
     // ---- 2) Retrieve ----
     const k = Math.max(1, Math.min(10, parseInt(topkEl.value || '5', 10)));
     const passages = topKSimilar(qv, k);
     const messages = buildPrompt(question, passages);
 
-    // ---- 3) Generate ----
-    const res = await llm.chat.completions.create({
-      messages,
-      temperature: 0.2,
-      max_tokens: 512,
-    });
+    // ---- 3) Generate (with one-time reload fallback) ----
+    let res;
+    try {
+      res = await llm.chat.completions.create({
+        messages,
+        temperature: 0.2,
+        max_tokens: 512,
+      });
+    } catch (e) {
+      const msg = String(e?.message || e);
+      if (/Model not loaded/i.test(msg) && chosenModelId) {
+        setStatus('WebLLM: reloading model…');
+        try {
+          if (typeof llm.reload === 'function') {
+            await llm.reload(chosenModelId);
+          } else {
+            llm = await CreateMLCEngine(chosenModelId, {
+              appConfig: prebuiltAppConfig,
+              use_web_worker: false,
+            });
+          }
+          res = await llm.chat.completions.create({
+            messages,
+            temperature: 0.2,
+            max_tokens: 512,
+          });
+        } catch (e2) {
+          throw e2;
+        }
+      } else {
+        throw e;
+      }
+    }
+
     const text = res?.choices?.[0]?.message?.content || '(no response)';
     ansEl.textContent = text;
 
@@ -162,16 +191,6 @@ async function ask() {
   }
 }
 
-// Prevent Enter from double-submitting while busy
-qEl.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') {
-    if (!busy) ask();
-    e.preventDefault();
-  }
-});
-askBtn.addEventListener('click', () => { if (!busy) ask(); });
-
-
 // ------------------------ Boot ------------------------------------
 (async () => {
   try {
@@ -187,5 +206,11 @@ askBtn.addEventListener('click', () => { if (!busy) ask(); });
   }
 })();
 
-askBtn.addEventListener('click', ask);
-qEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') ask(); });
+// Single set of listeners (guarded)
+askBtn.addEventListener('click', () => { if (!busy) ask(); });
+qEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (!busy) ask();
+  }
+});
