@@ -96,34 +96,53 @@ function buildPrompt(question, passages) {
 function escapeHtml(s) { return s.replace(/[&<>\"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c])); }
 
 // ------------------------ Ask flow --------------------------------
+let busy = false;
+
 async function ask() {
   if (!ready || !llm) {
     setStatus('Model is still loading. Please wait until it says “Ready!”.');
     return;
   }
+  if (busy) {
+    setStatus('Still answering the previous question…');
+    return;
+  }
+
   const question = qEl.value.trim();
   if (!question) return;
 
+  busy = true;
+  askBtn.disabled = true;
+  qEl.disabled = true;
   ansEl.textContent = 'Thinking…';
   srcEl.innerHTML = '';
 
   try {
+    // 1) Embed query and CLONE immediately to avoid lifetime issues
     const out = await qEmbedder(question, { pooling: 'mean', normalize: true });
-    const qv = Array.from(out.data);
+    // Clone into a standalone typed array (not tied to any backend tensor)
+    const qv = Float32Array.from(out.data);
+    // If the object supports explicit disposal, free it now
+    if (typeof out.dispose === 'function') {
+      try { out.dispose(); } catch {}
+    }
 
+    // 2) Retrieve
     const k = Math.max(1, Math.min(10, parseInt(topkEl.value || '5', 10)));
     const passages = topKSimilar(qv, k);
     const messages = buildPrompt(question, passages);
 
+    // 3) Generate (ensure only one request in flight)
     const res = await llm.chat.completions.create({
       messages,
       temperature: 0.2,
       max_tokens: 512,
     });
-    const text = res.choices?.[0]?.message?.content || '(no response)';
+
+    const text = res?.choices?.[0]?.message?.content || '(no response)';
     ansEl.textContent = text;
 
-    // sources
+    // 4) Sources
     passages.forEach(p => {
       const div = document.createElement('div');
       div.className = 'source';
@@ -132,10 +151,24 @@ async function ask() {
         `<div>${escapeHtml(p.text.slice(0, 800))}${p.text.length > 800 ? '…' : ''}</div>`;
       srcEl.appendChild(div);
     });
+
   } catch (e) {
     showError('Ask failed', e);
+  } finally {
+    busy = false;
+    askBtn.disabled = false;
+    qEl.disabled = false;
   }
 }
+
+// Prevent Enter from double-submitting while busy
+qEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    if (!busy) ask();
+    e.preventDefault();
+  }
+});
+askBtn.addEventListener('click', () => { if (!busy) ask(); });
 
 // ------------------------ Boot ------------------------------------
 (async () => {
