@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Dostoevsky RAG — Zero‑Cost</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="container">
+      <h1>Dostoevsky Q&A (Local RAG)</h1>
+      <p class="muted">Model runs in your browser. No data leaves your device.</p>
+
+      <div id="status">Loading models…</div>
+
+      <div class="controls">
+        <input id="question" type="text" placeholder="Ask about the books…" />
+        <button id="ask">Ask</button>
+        <label class="k">Top K:<input id="topk" type="number" min="1" max="10" value="5"/></label>
+      </div>
+
+      <div id="answer"></div>
+      <div id="sources"></div>
+    </div>
+
+    <script type="module" src="script.js"></script>
+  </body>
+</html>
