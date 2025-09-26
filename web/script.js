@@ -118,31 +118,32 @@ async function ask() {
   srcEl.innerHTML = '';
 
   try {
-    // 1) Embed query and CLONE immediately to avoid lifetime issues
+    // ---- 1) Embed query ----
     const out = await qEmbedder(question, { pooling: 'mean', normalize: true });
-    // Clone into a standalone typed array (not tied to any backend tensor)
-    const qv = Float32Array.from(out.data);
-    // If the object supports explicit disposal, free it now
+
+    // Make a hard copy into a plain JS array *before* disposal
+    const qv = Array.from(out.data);  // ensures a normal JS array
+
+    // Explicitly dispose if possible (Transformers.js returns DisposableTensors sometimes)
     if (typeof out.dispose === 'function') {
-      try { out.dispose(); } catch {}
+      try { out.dispose(); } catch (e) { console.warn("Dispose failed:", e); }
     }
 
-    // 2) Retrieve
+    // ---- 2) Retrieve ----
     const k = Math.max(1, Math.min(10, parseInt(topkEl.value || '5', 10)));
     const passages = topKSimilar(qv, k);
     const messages = buildPrompt(question, passages);
 
-    // 3) Generate (ensure only one request in flight)
+    // ---- 3) Generate ----
     const res = await llm.chat.completions.create({
       messages,
       temperature: 0.2,
       max_tokens: 512,
     });
-
     const text = res?.choices?.[0]?.message?.content || '(no response)';
     ansEl.textContent = text;
 
-    // 4) Sources
+    // ---- 4) Sources ----
     passages.forEach(p => {
       const div = document.createElement('div');
       div.className = 'source';
@@ -169,6 +170,7 @@ qEl.addEventListener('keydown', (e) => {
   }
 });
 askBtn.addEventListener('click', () => { if (!busy) ask(); });
+
 
 // ------------------------ Boot ------------------------------------
 (async () => {
