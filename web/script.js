@@ -1,8 +1,8 @@
-// --- Imports (browser modules from CDNs) ---
-import { pipeline } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
-import { CreateMLCEngine } from 'https://esm.run/@mlc-ai/web-llm';
+// --- Imports (pin versions + ESM) ---
+import { pipeline } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.16.1';
+import { CreateMLCEngine } from 'https://esm.run/@mlc-ai/web-llm@0.2.70';
 
-// --- Global variables ---
+// --- Globals / UI refs ---
 let INDEX = [];
 let qEmbedder, llm;
 const statusEl = document.getElementById('status');
@@ -12,59 +12,61 @@ const ansEl = document.getElementById('answer');
 const srcEl = document.getElementById('sources');
 const topkEl = document.getElementById('topk');
 
-function setStatus(text) {
-  statusEl.textContent = text;
+function setStatus(text) { statusEl.textContent = text; }
+function showError(prefix, e) {
+  console.error(prefix, e);
+  setStatus(`${prefix}: ${e?.message || e}`);
 }
 
+// --- Init steps ---
 async function loadIndex() {
   setStatus('Loading document index…');
   const resp = await fetch('./public/index.json');
+  if (!resp.ok) throw new Error(`index.json ${resp.status}`);
   const data = await resp.json();
   INDEX = data.records || [];
   if (!INDEX.length) throw new Error('No records found in index.json');
 }
 
 async function initEmbeddings() {
-  setStatus('Loading embedding model…');
+  setStatus('Loading embedding model (Transformers.js)…');
   qEmbedder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
 }
 
-
 async function initLLM() {
-  setStatus('Initializing WebLLM model (downloads on first run)…');
-  llm = await CreateMLCEngine('Llama-3.2-3B-Instruct-q4f16_1', {
-    initProgressCallback: (p) => setStatus(`WebLLM: ${p.text || ''}`)
-  });
-  setStatus('Ready! Ask a question.');
+  setStatus('Initializing WebLLM model (first run downloads weights)…');
+  try {
+    llm = await CreateMLCEngine('Llama-3.2-1B-Instruct-q4f16_1', {
+      initProgressCallback: (p) => {
+        console.log('WebLLM progress', p);
+        if (p?.text) setStatus(`WebLLM: ${p.text}`);
+      },
+      // GitHub Pages lacks COOP/COEP headers; avoid workers
+      use_web_worker: false
+    });
+    setStatus('Ready! Ask a question.');
+  } catch (e) {
+    showError('WebLLM failed to load', e);
+    throw e;
+  }
 }
 
-function dot(a, b) {
-  let s = 0;
-  for (let i = 0; i < a.length; i++) s += a[i] * b[i];
-  return s;
+// --- Retrieval utils ---
+function dot(a, b) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; }
+function cosineSim(qv, dv) { return dot(qv, dv); } // normalized
+function topKSimilar(qv, k=5) {
+  const scores = INDEX.map((rec, i) => ({ i, s: cosineSim(qv, rec.embedding) }));
+  scores.sort((a,b) => b.s - a.s);
+  return scores.slice(0, k).map(({i, s}) => ({ ...INDEX[i], score: s }));
 }
-
-function cosineSim(qv, dv) { // embeddings are normalized -> dot == cosine
-  return dot(qv, dv);
-}
-
-function topKSimilar(queryVec, k = 5) {
-  const scores = INDEX.map((rec, i) => ({ i, s: cosineSim(queryVec, rec.embedding) }));
-  scores.sort((a, b) => b.s - a.s);
-  return scores.slice(0, k).map(({ i, s }) => ({ ...INDEX[i], score: s }));
-}
-
-
 function buildPrompt(question, passages) {
-  const rules = `You are a careful literary assistant. Answer the user's question using ONLY the passages below. If unsure, say you cannot find it. Quote page ranges when helpful. Keep answers concise (<= 6 sentences).`;
-  const context = passages.map((p, idx) => `# Passage ${idx + 1} (score=${p.score.toFixed(3)}, ${p.book}, pp. ${p.pages[0]}-${p.pages[1]})\n${p.text}`).join('\n\n');
-  const user = `Question: ${question}\n\nUse the passages to answer. If the answer requires interpretation, explain briefly and cite which passages you used.`;
-  return [
-    { role: 'system', content: rules },
-    { role: 'user', content: context + '\n\n' + user }
-  ];
+  const rules = `You are a careful literary assistant. Answer ONLY using the passages. If unsure, say so. Cite page ranges. Keep it concise.`;
+  const ctx = passages.map((p, idx) =>
+    `# Passage ${idx+1} (score=${p.score.toFixed(3)}, ${p.book}, pp. ${p.pages[0]}-${p.pages[1]})\n${p.text}`
+  ).join('\n\n');
+  const user = `Question: ${question}\n\nUse the passages above; cite which ones you used.`;
+  return [{ role: 'system', content: rules }, { role: 'user', content: ctx + '\n\n' + user }];
 }
-
 
 async function ask() {
   const question = qEl.value.trim();
@@ -72,48 +74,43 @@ async function ask() {
   ansEl.textContent = 'Thinking…';
   srcEl.innerHTML = '';
 
-  // Embed query
-  const out = await qEmbedder(question, { pooling: 'mean', normalize: true });
-  const qv = Array.from(out.data);
+  try {
+    const out = await qEmbedder(question, { pooling: 'mean', normalize: true });
+    const qv = Array.from(out.data);
+    const k = Math.max(1, Math.min(10, parseInt(topkEl.value || '5', 10)));
+    const passages = topKSimilar(qv, k);
+    const messages = buildPrompt(question, passages);
 
-  // Retrieve
-  const k = Math.max(1, Math.min(10, parseInt(topkEl.value || '5', 10)));
-  const passages = topKSimilar(qv, k);
+    const completion = await llm.chat.completions.create({
+      messages, temperature: 0.2, max_tokens: 512
+    });
+    const text = completion.choices?.[0]?.message?.content || '(no response)';
+    ansEl.textContent = text;
 
-  // Build prompt and run LLM locally
-  const messages = buildPrompt(question, passages);
-  const completion = await llm.chat.completions.create({ messages, temperature: 0.2, max_tokens: 512 });
-  const text = completion.choices?.[0]?.message?.content || '(no response)';
-  ansEl.textContent = text;
-
-  // Show sources
-  passages.forEach(p => {
-    const div = document.createElement('div');
-    div.className = 'source';
-    div.innerHTML = `<div class="meta"><strong>Source:</strong> ${p.source} — <em>${p.book}</em> (score ${p.score.toFixed(3)})</div>` +
-      `<div>${escapeHtml(p.text.slice(0, 800))}${p.text.length > 800 ? '…' : ''}</div>`;
-    srcEl.appendChild(div);
-  });
+    // sources
+    passages.forEach(p => {
+      const div = document.createElement('div');
+      div.className = 'source';
+      div.innerHTML = `<div class="meta"><strong>Source:</strong> ${p.source} — <em>${p.book}</em> (score ${p.score.toFixed(3)})</div>` +
+        `<div>${escapeHtml(p.text.slice(0, 800))}${p.text.length>800?'…':''}</div>`;
+      srcEl.appendChild(div);
+    });
+  } catch (e) {
+    showError('Ask failed', e);
+  }
 }
 
+function escapeHtml(s){return s.replace(/[&<>\"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));}
 
-function escapeHtml(s) {
-  return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
-}
-
-// Init
+// Boot
 (async () => {
   try {
     await loadIndex();
     await initEmbeddings();
     await initLLM();
   } catch (e) {
-    console.error(e);
-    setStatus('Error during initialization. See console for details.');
+    // setStatus already updated; nothing else to do
   }
 })();
-
 askBtn.addEventListener('click', ask);
-qEl.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') ask();
-});
+qEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') ask(); });
