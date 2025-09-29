@@ -1,4 +1,4 @@
-# RAG Web App
+# https://abhinav14kr.github.io/rag-pdf-reader/
 
 This project is a Retrieval-Augmented Generation (RAG) application that lets users ask questions about Dostoevsky's books directly in their browser. It uses:
 
