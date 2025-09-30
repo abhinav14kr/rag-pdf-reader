@@ -104,7 +104,3 @@ Steps:
 - All inference happens in the browser — no server costs.  
 
 ---
-
-## License
-
-This project is for educational purposes. The texts of Dostoevsky's works are in the public domain.
