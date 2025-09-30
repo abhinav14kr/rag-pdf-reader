@@ -1,6 +1,9 @@
-# https://abhinav14kr.github.io/rag-pdf-reader/
+# RAG
 
-This project is a Retrieval-Augmented Generation (RAG) application that lets users ask questions about Dostoevsky's books directly in their browser. It uses:
+This project is a Retrieval-Augmented Generation (RAG) application that lets users ask questions about Dostoevsky's books directly in their browser by visiting https://abhinav14kr.github.io/rag-pdf-reader/
+
+
+It uses:
 
 - **pypdf** to parse PDF books into text  
 - **Transformers.js** for local embeddings (MiniLM)  
